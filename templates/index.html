@@ -531,7 +531,7 @@ async function saveCredentials() {
     username: document.getElementById('username').value,
     password: document.getElementById('password').value,
     telegram_token: document.getElementById('telegramToken').value,
-    chat_id: document.getElementById('chatId').value,
+    telegram_chat_id: document.getElementById('chatId').value,
   };
   const r = await fetch('/api/credentials', {
     method: 'POST',
