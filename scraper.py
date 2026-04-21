@@ -29,7 +29,7 @@ class LMSScraper:
         # ── Step 1: Login SIAKAD ──────────────────────────────────────────
         page.goto(self.SIAKAD_URL, timeout=30000)
         page.wait_for_load_state("networkidle", timeout=30000)
-
+        page.wait_for_selector('text=Selamat Datang', timeout=15000)
         # Fill login form
         page.fill('input[name="username"], input[type="text"]', username)
         page.fill('input[name="password"], input[type="password"]', password)
@@ -38,9 +38,13 @@ class LMSScraper:
 
         # ── Step 2: Navigate to LMS menu ─────────────────────────────────
         # Go to LMS connector page
-        lms_url = "https://siakad.polinema.ac.id/beranda#"
-        page.goto("https://siakad.polinema.ac.id/index.php?r=akademik/lms", timeout=30000)
-        page.wait_for_load_state("networkidle", timeout=30000)
+        try:
+            # Naikkan timeout menjadi 60 detik (60000)
+            page.goto("https://siakad.polinema.ac.id/index.php?r=akademik/lms", 
+                      timeout=60000, 
+                      wait_until="domcontentloaded") # Lebih ringan daripada networkidle
+        except Exception as e:
+            add_log(f"Gagal memuat menu LMS: {str(e)}", "error")
 
         # Click "Connect to LMS Polinema" button
         try:
