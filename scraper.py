@@ -29,7 +29,6 @@ class LMSScraper:
         # ── Step 1: Login SIAKAD ──────────────────────────────────────────
         page.goto(self.SIAKAD_URL, timeout=30000)
         page.wait_for_load_state("networkidle", timeout=30000)
-        page.wait_for_selector('text=Selamat Datang', timeout=15000)
         # Fill login form
         page.fill('input[name="username"], input[type="text"]', username)
         page.fill('input[name="password"], input[type="password"]', password)
