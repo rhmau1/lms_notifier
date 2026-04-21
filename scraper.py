@@ -76,7 +76,22 @@ class LMSScraper:
         if "login" in page.url.lower():
             raise Exception("Login gagal! Cek username/password SIAKAD kamu.")
 
+        try:
+            # 1. Cari tombol filter (berdasarkan teks atau icon clock)
+            filter_btn = page.locator('[data-region="day-filter"] button')
+            if filter_btn.is_visible():
+                filter_btn.click()
+                # 2. Klik opsi "All" pada dropdown
+                # Berdasarkan HTML kamu: data-filtername="all"
+                page.locator('[data-region="day-filter"] [data-filtername="all"]').click()
+        
+                # 3. Tunggu sebentar agar list group ter-update (AJAX load)
+                page.wait_for_load_state("networkidle", timeout=10000)
+                add_log("📅 Filter 'All' diaktifkan", "info")
+        except Exception as e:
+            add_log(f"⚠️ Gagal set filter All: {str(e)}", "warn")
         # ── Step 5: Scrape Timeline tasks ────────────────────────────────
+        page.screenshot(path="debug.png")
         return self._parse_timeline(page)
 
     def _parse_timeline(self, page) -> list[dict]:
@@ -84,16 +99,16 @@ class LMSScraper:
 
         # Wait for timeline to load
         try:
-            page.wait_for_selector('[data-region="event-list-content"], .timeline-event, [data-region="paged-content"]', timeout=15000)
+            page.wait_for_selector('[data-region="event-list-item"], .timeline-event, [data-region="paged-content"]', timeout=15000)
         except PlaywrightTimeout:
             pass
 
         # Extract timeline items
         # Try multiple selectors for LMS Moodle timeline
         selectors = [
-            '[data-region="event-list-content"] [data-region="event-list-item"]',
-            '.timeline-event',
-            '[data-region="paged-content-page"] li',
+            '[data-region="event-list-item"]', # Ini yang paling cocok dengan HTML kamu
+            '.list-group-item.flex-column',
+            '.event-name-container'
         ]
 
         items = []
@@ -122,38 +137,42 @@ class LMSScraper:
         return tasks
 
     def _extract_task(self, element) -> dict | None:
-        text = element.inner_text()
-        if not text.strip():
-            return None
-
-        # Get link
-        link_el = element.query_selector("a")
+        # 1. Ambil Judul dan Link
+        # Di HTML kamu: <h6 class="event-name">"Judul Tugas"</h6>
+        title_el = element.query_selector(".event-name")
+        link_el = element.query_selector("a[title]")
+        
+        if not title_el: return None
+    
+        title = title_el.inner_text().strip().strip('"')
         link = link_el.get_attribute("href") if link_el else ""
-        title = link_el.inner_text().strip() if link_el else text.strip()
 
-        # Get course name
-        course_el = element.query_selector(".event-name-container small, .course-name, small")
-        course = course_el.inner_text().strip() if course_el else ""
+        # 2. Ambil Mata Kuliah
+        # Di HTML kamu: <small class="text-muted">"Nama Matkul"</small>
+        course_el = element.query_selector("small.text-muted")
+        course = course_el.inner_text().strip().strip('"') if course_el else ""
 
-        # Get date/time — look for time elements
-        time_el = element.query_selector("time, .date, [data-region='event-time']")
-        deadline_raw = time_el.inner_text().strip() if time_el else ""
+        # 3. Ambil Jam Deadline
+        # Di HTML kamu: <small class="text-right"> 18:00 </small>
+        time_el = element.query_selector("small.text-right")
+        time_str = time_el.inner_text().strip() if time_el else ""
 
-        # Try to get datetime attribute
-        deadline_attr = time_el.get_attribute("datetime") if time_el else ""
+        # 4. Ambil Tanggal (Cari heading h5 terdekat di atasnya)
+        # Ini agak tricky di Playwright, tapi bisa menggunakan evaluate
+        date_str = element.evaluate("""el => {
+            let header = el.closest('.list-group').previousElementSibling;
+            return header ? header.innerText : '';
+        }""")
 
-        # Parse deadline
-        deadline_str = self._parse_deadline(deadline_raw, deadline_attr)
+        full_deadline = f"{date_str} {time_str}".strip()
 
-        # Generate stable ID
         task_id = hashlib.md5(f"{title}{course}".encode()).hexdigest()[:12]
 
         return {
             "id": task_id,
             "title": title,
             "course": course,
-            "deadline": deadline_str,
-            "deadline_raw": deadline_raw,
+            "deadline": full_deadline,
             "link": link,
             "scraped_at": datetime.now().isoformat(),
         }
