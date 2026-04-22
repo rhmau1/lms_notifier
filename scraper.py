@@ -75,24 +75,82 @@ class LMSScraper:
         try:
             btn = page.locator('a:has-text("Connect to LMS"), button:has-text("Connect to LMS"), a.btn:has-text("LMS Polinema")')
             if btn.count() > 0:
-                with page.expect_navigation(timeout=30000, wait_until="networkidle"):
-                    btn.first.click()
-        except PlaywrightTimeout:
+                # Handle possible new tab (target="_blank")
+                try:
+                    with page.context.expect_page(timeout=10000) as new_page_info:
+                        btn.first.click()
+                    page = new_page_info.value
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                except (PlaywrightTimeout, Exception):
+                    # Fallback to current page navigation if no new tab
+                    with page.expect_navigation(timeout=30000, wait_until="networkidle"):
+                        btn.first.click()
+        except Exception as e:
+            print(f"DIAGNOSTIC: Step 5 click failed: {str(e)}")
             pass
 
         # ── Step 6: Handle Spada intermediate ─────────────────────────────
-        time.sleep(2)
+        # Per alur user: Kita harus masuk ke SALAH SATU kelas dulu di Spada
+        # agar sseni login (kredensial) terbawa sempurna ke LMS.
+        time.sleep(3)
         if "spada" in page.url.lower() and "lmsslc" not in page.url:
             try:
-                lms_tab = page.locator('a:has-text("LMS"), .nav-link:has-text("LMS")').first
-                with page.expect_navigation(timeout=20000, wait_until="networkidle"):
-                    lms_tab.click()
-            except Exception:
+                print("DIAGNOSTIC: Mencoba masuk ke salah satu kelas di Spada...")
+                # Cari tombol kelas (biasanya ada teks 'LMS Polinema', 'Masuk', atau link ke course)
+                selectors = [
+                    'a[href*="lmsslc.polinema.ac.id/course/view.php"]',
+                    'a:has-text("LMS Polinema")',
+                    'a:has-text("Masuk")',
+                    'a.btn-primary:has-text("LMS")'
+                ]
+                
+                course_link = None
+                for sel in selectors:
+                    loc = page.locator(sel)
+                    if loc.count() > 0:
+                        course_link = loc.first
+                        break
+                
+                if course_link:
+                    # Tangani jika klik kelas membuka tab baru
+                    try:
+                        with page.context.expect_page(timeout=10000) as new_page_info:
+                            course_link.click()
+                        page = new_page_info.value
+                    except:
+                        with page.expect_navigation(timeout=30000, wait_until="networkidle"):
+                            course_link.click()
+                    
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                    print(f"DIAGNOSTIC: Berhasil masuk ke halaman kelas: {page.url}")
+                else:
+                    print("DIAGNOSTIC: Tidak menemukan link kelas di Spada, mencoba tab LMS...")
+                    lms_tab = page.locator('a:has-text("LMS"), .nav-link:has-text("LMS")').first
+                    if lms_tab.count() > 0:
+                        with page.expect_navigation(timeout=20000, wait_until="networkidle"):
+                            lms_tab.click()
+            except Exception as e:
+                print(f"DIAGNOSTIC: Step 6 failed: {str(e)}")
                 pass
 
         # ── Step 7: Navigate directly to LMS dashboard ────────────────────
         page.goto(self.LMS_DASHBOARD, timeout=30000)
         page.wait_for_load_state("networkidle", timeout=30000)
+
+        # Wait for GUEST session to transition (Polinema SSO can be slow)
+        deadline = time.time() + 25  # Menambah waktu tunggu karena alur perpindahan sessi
+        while time.time() < deadline:
+            title = page.title()
+            if "(GUEST)" not in title.upper():
+                # Pastikan juga userid sudah terdeteksi di CFG (bukan 1/0)
+                uid = page.evaluate("() => typeof M !== 'undefined' && M.cfg ? M.cfg.userid : 0")
+                if uid and int(uid) > 1:
+                    break
+            
+            time.sleep(3)
+            print(f"DIAGNOSTIC: Masih berstatus Guest/ID=1, mencoba refresh... ({page.url})")
+            page.reload()
+            page.wait_for_load_state("networkidle")
 
         if "login" in page.url.lower() and "lmsslc" in page.url:
             raise Exception("Gagal masuk LMS: sesi tidak terbawa dari SIAKAD.")
@@ -132,7 +190,7 @@ class LMSScraper:
         if auth["userid"] <= 1:
             try:
                 # Common locations for student ID: timeline block, user menu, etc.
-                uid = page.evaluate("""() => {
+                uid = page.evaluate(r"""() => {
                     const el = document.querySelector('[data-userid]:not([data-userid="1"]):not([data-userid="0"])');
                     if (el) return el.dataset.userid;
                     const profileLink = document.querySelector('a[href*="/user/profile.php?id="]');
@@ -177,7 +235,7 @@ class LMSScraper:
                                 index: 0,
                                 methodname: 'core_calendar_get_action_events_by_timesort',
                                 args: {{
-                                    limitnum: 100,
+                                    limitnum: 50,
                                     timesortfrom: {time_from},
                                     timesortto: {time_to},
                                     aftereventid: 0,
