@@ -136,7 +136,7 @@ class LMSScraper:
                             index: 0,
                             methodname: 'core_calendar_get_action_events_by_timesort',
                             args: {{
-                                limitnum: 100,
+                                limitnum: 50,
                                 timesortfrom: Number({time_from}),
                                 timesortto: Number({time_to}),
                                 aftereventid: 0
