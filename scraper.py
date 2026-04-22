@@ -134,13 +134,21 @@ class LMSScraper:
                 # Common locations for student ID: timeline block, user menu, etc.
                 uid = page.evaluate("""() => {
                     const el = document.querySelector('[data-userid]:not([data-userid="1"]):not([data-userid="0"])');
-                    return el ? el.dataset.userid : null;
+                    if (el) return el.dataset.userid;
+                    const profileLink = document.querySelector('a[href*="/user/profile.php?id="]');
+                    if (profileLink) {
+                        const m = profileLink.href.match(/id=(\d+)/);
+                        return m ? m[1] : null;
+                    }
+                    return null;
                 }""")
                 if uid: 
                     auth["userid"] = int(uid)
             except Exception:
                 pass
 
+        print(f"DIAGNOSTIC: Page Title='{page.title()}', URL='{page.url}'")
+        print(f"DIAGNOSTIC: Extraction Result -> sesskey:{'OK' if auth['sesskey'] else 'MISSING'}, userid:{auth['userid']}")
         return auth
 
     def _fetch_tasks_via_api(self, page, auth: dict) -> list[dict]:
@@ -197,6 +205,13 @@ class LMSScraper:
         data = json.loads(result)
         if isinstance(data, dict) and data.get("fetch_error"):
             raise Exception(f"Fetch API error: {data['fetch_error']}")
+        
+        print(f"DIAGNOSTIC: API Response status: {'List' if isinstance(data, list) else type(data)}")
+        if isinstance(data, list):
+            for i, res in enumerate(data):
+                err = res.get("error", False)
+                print(f"DIAGNOSTIC: Method[{i}] result: {'ERROR' if err else 'SUCCESS'}")
+                if err: print(f"DIAGNOSTIC: Method[{i}] error details: {res.get('exception')}")
 
         return self._parse_multi_api_response(data)
 
@@ -211,6 +226,8 @@ class LMSScraper:
             
             res_data = response.get("data", {})
             events = res_data.get("events", [])
+            idx = response.get("index", "?")
+            print(f"DIAGNOSTIC: Method[{idx}] returned {len(events) if isinstance(events, list) else 0} raw events")
             if isinstance(events, list):
                 all_events.extend(events)
 
@@ -241,7 +258,10 @@ class LMSScraper:
             if not found_kw:
                 # Filter out generic/meta events
                 if event_type in ["site", "category", "user"]:
+                    print(f"DIAGNOSTIC: Filtered out generic event: {event.get('name')} (type: {event_type})")
                     return None
+            else:
+                print(f"DIAGNOSTIC: Keeping keyword-matched event: {event.get('name')}")
 
         raw_name = event.get("name", "").strip()
         title = re.sub(r'\s+is\s+due\s*$', '', raw_name, flags=re.IGNORECASE).strip() or raw_name
