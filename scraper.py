@@ -27,7 +27,6 @@ class LMSScraper:
                 browser.close()
 
     def _scrape(self, page, username: str, password: str) -> list[dict]:
-
         # ── Step 1: Load SIAKAD login page ───────────────────────────────
         page.goto(self.SIAKAD_URL, timeout=30000)
         page.wait_for_load_state("networkidle", timeout=30000)
@@ -37,8 +36,8 @@ class LMSScraper:
         page.fill('input[name="LoginForm[password]"], input[name="password"]', password)
         page.click('button[type="submit"], input[type="submit"]')
 
-        # ── Step 3: Wait for post-login redirect to fully complete ─────────
-        deadline = time.time() + 60  
+        # ── Step 3: Wait for post-login redirect ──────────────────────────
+        deadline = time.time() + 60
         while time.time() < deadline:
             time.sleep(2)
             try:
@@ -47,61 +46,42 @@ class LMSScraper:
                 pass
 
             url = page.url
-            # Success conditions: we left the login page and landed on a functional page
             if any(x in url for x in ["beranda", "dashboard", "lmsslc", "spada"]):
                 break
 
-            # Check body content
             body = ""
             try:
                 body = page.inner_text("body").lower()
             except Exception:
                 pass
 
-            # Enhanced sync & valid message check
-            # We don't want to crash if it says "Input data anda valid"
             sync_phrases = ["sinkronisasi", "sedang login", "mohon tunggu", "data anda valid", "proses penyimpanan"]
             is_loading_screen = any(p in body for p in sync_phrases)
 
             if not is_loading_screen:
-                # If not in loading/syncing, check if there's a legitimate error message
                 err_el = page.query_selector('.alert-danger, #error-summary, .help-block.error')
                 if err_el:
                     err_text = err_el.inner_text().strip()
-                    # Final safety check: ensure the error text itself isn't a success message
                     if not any(p in err_text.lower() for p in ["valid", "berhasil", "sukses"]):
                         raise Exception(f"Login SIAKAD gagal: {err_text[:120]}")
-                
         else:
             raise Exception("Login SIAKAD timeout: redirect tidak selesai dalam 60 detik.")
 
         # ── Step 4: Navigate to Akademik → LMS page ──────────────────────
-        page.goto(
-            "https://siakad.polinema.ac.id/index.php?r=akademik/lms",
-            timeout=30000
-        )
+        page.goto("https://siakad.polinema.ac.id/index.php?r=akademik/lms", timeout=30000)
         page.wait_for_load_state("networkidle", timeout=30000)
 
         # ── Step 5: Click "Connect to LMS Polinema" ───────────────────────
         try:
-            btn = page.locator(
-                'a:has-text("Connect to LMS"), '
-                'button:has-text("Connect to LMS"), '
-                'a.btn:has-text("LMS Polinema")'
-            )
+            btn = page.locator('a:has-text("Connect to LMS"), button:has-text("Connect to LMS"), a.btn:has-text("LMS Polinema")')
             if btn.count() > 0:
                 with page.expect_navigation(timeout=30000, wait_until="networkidle"):
                     btn.first.click()
         except PlaywrightTimeout:
             pass
 
-        # ── Step 6: Handle Spada intermediate page ─────────────────────
+        # ── Step 6: Handle Spada intermediate ─────────────────────────────
         time.sleep(2)
-        try:
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except PlaywrightTimeout:
-            pass
-
         if "spada" in page.url.lower() and "lmsslc" not in page.url:
             try:
                 lms_tab = page.locator('a:has-text("LMS"), .nav-link:has-text("LMS")').first
@@ -127,35 +107,26 @@ class LMSScraper:
 
     def _get_sesskey(self, page) -> str:
         try:
-            key = page.evaluate("() => M.cfg && M.cfg.sesskey ? M.cfg.sesskey : null")
-            if key:
-                return key
-        except Exception:
-            pass
-        try:
-            content = page.content()
-            m = re.search(r'"sesskey"\s*:\s*"([A-Za-z0-9]+)"', content)
-            if m:
-                return m.group(1)
-        except Exception:
-            pass
-        return ""
+            key = page.evaluate("() => typeof M !== 'undefined' && M.cfg && M.cfg.sesskey ? M.cfg.sesskey : null")
+            if key: return key
+        except Exception: pass
+        content = page.content()
+        m = re.search(r'"sesskey"\s*:\s*"([A-Za-z0-9]+)"', content)
+        return m.group(1) if m else ""
 
     def _fetch_timeline_via_api(self, page, sesskey: str) -> list[dict]:
         now_ts = int(time.time())
-        time_from = now_ts - (30 * 24 * 3600)   
-        time_to   = now_ts + (180 * 24 * 3600)  
+        # Moodle API sangat sensitif terhadap tipe data (harus Integer)
+        time_from = int(now_ts - (30 * 24 * 3600))
+        time_to = int(now_ts + (180 * 24 * 3600))
 
-        api_url = (
-            f"{self.LMS_BASE}/lib/ajax/service.php"
-            f"?sesskey={sesskey}"
-            f"&info=core_calendar_get_action_events_by_timesort"
-        )
+        api_url = f"{self.LMS_BASE}/lib/ajax/service.php?sesskey={sesskey}&info=core_calendar_get_action_events_by_timesort"
 
+        # Perbaikan: Memastikan payload dikirim sebagai array objek dengan tipe data integer yang benar
         result = page.evaluate(f"""
             async () => {{
                 try {{
-                    const resp = await fetch('{api_url}', {{
+                    const response = await fetch('{api_url}', {{
                         method: 'POST',
                         headers: {{
                             'Content-Type': 'application/json',
@@ -166,17 +137,17 @@ class LMSScraper:
                             methodname: 'core_calendar_get_action_events_by_timesort',
                             args: {{
                                 limitnum: 100,
-                                timesortfrom: {time_from},
-                                timesortto: {time_to},
+                                timesortfrom: Number({time_from}),
+                                timesortto: Number({time_to}),
                                 limitfrom: 0,
                                 actioneventsinprogress: false
                             }}
                         }}])
                     }});
-                    const data = await resp.json();
-                    return JSON.stringify(data);
-                }} catch(e) {{
-                    return JSON.stringify({{fetch_error: e.toString()}});
+                    const json = await response.json();
+                    return JSON.stringify(json);
+                }} catch (e) {{
+                    return JSON.stringify({{ fetch_error: e.toString() }});
                 }}
             }}
         """)
@@ -197,34 +168,26 @@ class LMSScraper:
         response = data[0]
         if response.get("error"):
             msg = response.get("exception", {}).get("message", "Unknown API error")
+            # Jika error masih "Invalid parameter", kita log detailnya
             raise Exception(f"Moodle API error: {msg}")
 
         events = response.get("data", {}).get("events", [])
         tasks = []
         for event in events:
             try:
-                t = self._parse_event(event)
-                if t:
-                    tasks.append(t)
-            except Exception:
-                continue
+                parsed = self._parse_event(event)
+                if parsed: tasks.append(parsed)
+            except Exception: continue
         return tasks
 
     def _parse_event(self, event: dict) -> dict | None:
         event_type = event.get("eventtype", "")
-        component  = event.get("component", "")
+        component = event.get("component", "")
 
-        activity_components = {
-            "mod_assign", "mod_quiz", "mod_workshop", "mod_choice",
-            "mod_feedback", "mod_lesson", "mod_scorm", "mod_data",
-            "mod_forum", "mod_glossary", "mod_h5pactivity",
-        }
+        activity_components = {"mod_assign", "mod_quiz", "mod_workshop", "mod_choice", "mod_feedback", "mod_lesson", "mod_scorm", "mod_data", "mod_forum", "mod_glossary", "mod_h5pactivity"}
         activity_event_types = {"due", "gradingdue", "open", "close", "expectcompletionon"}
 
-        is_activity = (
-            component in activity_components
-            or event_type in activity_event_types
-        )
+        is_activity = (component in activity_components or event_type in activity_event_types)
         if not is_activity:
             name_lc = event.get("name", "").lower()
             if not any(k in name_lc for k in ["due", "deadline", "submit", "laporan", "tugas", "milestone"]):
@@ -235,15 +198,13 @@ class LMSScraper:
 
         course_info = event.get("course") or {}
         course = course_info.get("fullname", "")
-        if len(course) > 70:
-            course = course[:67] + "..."
+        if len(course) > 70: course = course[:67] + "..."
 
         deadline_ts = event.get("timesort") or event.get("timestart") or 0
         deadline_str = "Tidak diketahui"
         if deadline_ts:
             try:
-                dt_utc = datetime.fromtimestamp(deadline_ts, tz=timezone.utc)
-                dt_wib = dt_utc + timedelta(hours=7)
+                dt_wib = datetime.fromtimestamp(deadline_ts, tz=timezone.utc) + timedelta(hours=7)
                 deadline_str = dt_wib.strftime("%d %b %Y %H:%M WIB")
             except Exception:
                 deadline_str = str(deadline_ts)
@@ -255,9 +216,7 @@ class LMSScraper:
             if instance and mod:
                 url = f"{self.LMS_BASE}/mod/{mod}/view.php?id={instance}"
 
-        task_id = str(event.get("id", "")) or hashlib.md5(
-            f"{title}{course}{deadline_ts}".encode()
-        ).hexdigest()[:12]
+        task_id = str(event.get("id", "")) or hashlib.md5(f"{title}{course}{deadline_ts}".encode()).hexdigest()[:12]
 
         return {
             "id": task_id,
