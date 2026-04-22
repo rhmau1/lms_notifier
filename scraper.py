@@ -97,53 +97,83 @@ class LMSScraper:
         if "login" in page.url.lower() and "lmsslc" in page.url:
             raise Exception("Gagal masuk LMS: sesi tidak terbawa dari SIAKAD.")
 
-        # ── Step 8: Get sesskey ───────────────────────────────────────────
-        sesskey = self._get_sesskey(page)
-        if not sesskey:
+        # ── Step 8: Get auth data (sesskey & userid) ──────────────────────
+        auth = self._get_auth_data(page)
+        if not auth["sesskey"]:
             raise Exception("Gagal mendapatkan sesskey LMS.")
 
         # ── Step 9: Fetch events via Moodle AJAX API ──────────────────────
-        return self._fetch_timeline_via_api(page, sesskey)
+        return self._fetch_tasks_via_api(page, auth)
 
-    def _get_sesskey(self, page) -> str:
+    def _get_auth_data(self, page) -> dict:
+        auth = {"sesskey": "", "userid": 0}
         try:
-            key = page.evaluate("() => typeof M !== 'undefined' && M.cfg && M.cfg.sesskey ? M.cfg.sesskey : null")
-            if key: return key
-        except Exception: pass
-        content = page.content()
-        m = re.search(r'"sesskey"\s*:\s*"([A-Za-z0-9]+)"', content)
-        return m.group(1) if m else ""
+            # Try to get from Moodle config
+            cfg = page.evaluate("() => typeof M !== 'undefined' ? M.cfg : {}")
+            auth["sesskey"] = cfg.get("sesskey", "")
+            auth["userid"] = int(cfg.get("userid", 0))
+        except Exception:
+            pass
 
-    def _fetch_timeline_via_api(self, page, sesskey: str) -> list[dict]:
+        if not auth["sesskey"]:
+            try:
+                content = page.content()
+                m = re.search(r'"sesskey"\s*:\s*"([A-Za-z0-9]+)"', content)
+                if m: auth["sesskey"] = m.group(1)
+            except Exception:
+                pass
+
+        if not auth["userid"]:
+            try:
+                # Fallback: get from data-userid attributes common in Moodle tags
+                uid = page.evaluate("() => document.querySelector('[data-userid]')?.dataset.userid")
+                if uid: auth["userid"] = int(uid)
+            except Exception:
+                pass
+
+        return auth
+
+    def _fetch_tasks_via_api(self, page, auth: dict) -> list[dict]:
+        sesskey = auth["sesskey"]
+        userid = auth["userid"]
         now_ts = int(time.time())
-        # Moodle API sangat sensitif terhadap tipe data (harus Integer)
-        time_from = int(now_ts - (30 * 24 * 3600))
+        
+        # Range: 90 days ago to 6 months ahead
+        time_from = int(now_ts - (90 * 24 * 3600))
         time_to = int(now_ts + (180 * 24 * 3600))
 
-        api_url = f"{self.LMS_BASE}/lib/ajax/service.php?sesskey={sesskey}&info=core_calendar_get_action_events_by_timesort"
+        api_url = f"{self.LMS_BASE}/lib/ajax/service.php?sesskey={sesskey}"
 
-        # Perbaikan: Memastikan payload dikirim sebagai array objek dengan tipe data integer yang benar
+        # Fetch from BOTH Timeline and Upcoming View to be safe
         result = page.evaluate(f"""
             async () => {{
                 try {{
-                    const response = await fetch('{api_url}', {{
+                    const resp = await fetch('{api_url}', {{
                         method: 'POST',
-                        headers: {{
-                            'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
+                        headers: {{ 
+                            'Content-Type': 'application/json', 
+                            'X-Requested-With': 'XMLHttpRequest' 
                         }},
-                        body: JSON.stringify([{{
-                            index: 0,
-                            methodname: 'core_calendar_get_action_events_by_timesort',
-                            args: {{
-                                limitnum: 50,
-                                timesortfrom: Number({time_from}),
-                                timesortto: Number({time_to}),
-                                aftereventid: 0
+                        body: JSON.stringify([
+                            {{
+                                index: 0,
+                                methodname: 'core_calendar_get_action_events_by_timesort',
+                                args: {{
+                                    limitnum: 100,
+                                    timesortfrom: {time_from},
+                                    timesortto: {time_to},
+                                    aftereventid: 0,
+                                    userid: {userid}
+                                }}
+                            }},
+                            {{
+                                index: 1,
+                                methodname: 'core_calendar_get_calendar_upcoming_view',
+                                args: {{ courseid: 0, categoryid: 0 }}
                             }}
-                        }}])
+                        ])
                     }});
-                    const json = await response.json();
+                    const json = await resp.json();
                     return JSON.stringify(json);
                 }} catch (e) {{
                     return JSON.stringify({{ fetch_error: e.toString() }});
@@ -152,32 +182,38 @@ class LMSScraper:
         """)
 
         if not result:
-            raise Exception("API timeline tidak mengembalikan data.")
+            raise Exception("API LMS tidak mengembalikan data.")
 
         data = json.loads(result)
         if isinstance(data, dict) and data.get("fetch_error"):
             raise Exception(f"Fetch API error: {data['fetch_error']}")
 
-        return self._parse_api_response(data)
+        return self._parse_multi_api_response(data)
 
-    def _parse_api_response(self, data: list) -> list[dict]:
+    def _parse_multi_api_response(self, data: list) -> list[dict]:
         if not data or not isinstance(data, list):
             return []
 
-        response = data[0]
-        if response.get("error"):
-            msg = response.get("exception", {}).get("message", "Unknown API error")
-            # Jika error masih "Invalid parameter", kita log detailnya
-            raise Exception(f"Moodle API error: {msg}")
+        all_events = []
+        for response in data:
+            if response.get("error"):
+                continue 
+            
+            res_data = response.get("data", {})
+            events = res_data.get("events", [])
+            if isinstance(events, list):
+                all_events.extend(events)
 
-        events = response.get("data", {}).get("events", [])
-        tasks = []
-        for event in events:
+        unique_tasks = {}
+        for event in all_events:
             try:
-                parsed = self._parse_event(event)
-                if parsed: tasks.append(parsed)
-            except Exception: continue
-        return tasks
+                task = self._parse_event(event)
+                if task and task["id"] not in unique_tasks:
+                    unique_tasks[task["id"]] = task
+            except Exception:
+                continue
+
+        return sorted(unique_tasks.values(), key=lambda x: x["deadline_ts"])
 
     def _parse_event(self, event: dict) -> dict | None:
         event_type = event.get("eventtype", "")
@@ -187,10 +223,14 @@ class LMSScraper:
         activity_event_types = {"due", "gradingdue", "open", "close", "expectcompletionon"}
 
         is_activity = (component in activity_components or event_type in activity_event_types)
+        
         if not is_activity:
             name_lc = event.get("name", "").lower()
-            if not any(k in name_lc for k in ["due", "deadline", "submit", "laporan", "tugas", "milestone"]):
-                return None
+            interesting_keywords = ["due", "deadline", "submit", "laporan", "tugas", "milestone", "quiz", "ujian", "uas", "uts"]
+            if not any(k in name_lc for k in interesting_keywords):
+                # Filter out generic/meta events
+                if event_type in ["site", "category", "user"]:
+                    return None
 
         raw_name = event.get("name", "").strip()
         title = re.sub(r'\s+is\s+due\s*$', '', raw_name, flags=re.IGNORECASE).strip() or raw_name
