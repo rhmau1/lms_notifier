@@ -138,6 +138,8 @@ class LMSScraper:
         userid = auth["userid"]
         now_ts = int(time.time())
         
+        print(f"DEBUG: Using userid={userid}, sesskey={sesskey[:5]}...")
+
         # Range: 90 days ago to 6 months ahead
         time_from = int(now_ts - (90 * 24 * 3600))
         time_to = int(now_ts + (180 * 24 * 3600))
@@ -169,7 +171,7 @@ class LMSScraper:
                             {{
                                 index: 1,
                                 methodname: 'core_calendar_get_calendar_upcoming_view',
-                                args: {{ courseid: 0, categoryid: 0 }}
+                                args: {{ courseid: 0, categoryid: 0, userid: {userid} }}
                             }}
                         ])
                     }});
@@ -201,6 +203,7 @@ class LMSScraper:
             
             res_data = response.get("data", {})
             events = res_data.get("events", [])
+            print(f"DEBUG: Responding index {response.get('index')} returned {len(events) if isinstance(events, list) else 'no'} events")
             if isinstance(events, list):
                 all_events.extend(events)
 
@@ -227,10 +230,14 @@ class LMSScraper:
         if not is_activity:
             name_lc = event.get("name", "").lower()
             interesting_keywords = ["due", "deadline", "submit", "laporan", "tugas", "milestone", "quiz", "ujian", "uas", "uts"]
-            if not any(k in name_lc for k in interesting_keywords):
+            found_kw = [k for k in interesting_keywords if k in name_lc]
+            if not found_kw:
                 # Filter out generic/meta events
                 if event_type in ["site", "category", "user"]:
+                    print(f"DEBUG: Skipping site/user event: {event.get('name')}")
                     return None
+            else:
+                print(f"DEBUG: Found interesting non-activity event: {event.get('name')} (KW: {found_kw})")
 
         raw_name = event.get("name", "").strip()
         title = re.sub(r'\s+is\s+due\s*$', '', raw_name, flags=re.IGNORECASE).strip() or raw_name
