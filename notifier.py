@@ -1,4 +1,5 @@
 import requests
+import time
 from datetime import datetime
 
 
@@ -34,14 +35,30 @@ class TelegramNotifier:
             return
 
         if len(tasks) == 1:
-            task = tasks[0]
-            msg = self._format_single_task(task)
+            msg = self._format_single_task(tasks[0])
         else:
             msg = self._format_multiple_tasks(tasks)
 
         self.send(msg)
 
+    def _urgency_icon(self, task: dict) -> str:
+        """Return emoji based on days until deadline"""
+        ts = task.get("deadline_ts", 0)
+        if not ts:
+            return "📝"
+        now = time.time()
+        days_left = (ts - now) / 86400
+        if days_left < 0:
+            return "🔴"  # overdue
+        elif days_left <= 3:
+            return "🔴"  # urgent
+        elif days_left <= 7:
+            return "🟡"  # soon
+        else:
+            return "🟢"  # ok
+
     def _format_single_task(self, task: dict) -> str:
+        icon = self._urgency_icon(task)
         title = task.get("title", "Tugas tidak diketahui")
         course = task.get("course", "-")
         deadline = task.get("deadline", "-")
@@ -49,7 +66,7 @@ class TelegramNotifier:
 
         msg = (
             f"📚 <b>Tugas Baru Ditemukan!</b>\n\n"
-            f"📝 <b>{title}</b>\n"
+            f"{icon} <b>{title}</b>\n"
             f"🏫 {course}\n"
             f"⏰ Deadline: <b>{deadline}</b>\n"
         )
@@ -60,26 +77,27 @@ class TelegramNotifier:
     def _format_multiple_tasks(self, tasks: list[dict]) -> str:
         msg = f"📚 <b>{len(tasks)} Tugas Baru Ditemukan!</b>\n\n"
         for i, task in enumerate(tasks, 1):
+            icon = self._urgency_icon(task)
             title = task.get("title", "?")
             course = task.get("course", "-")
             deadline = task.get("deadline", "-")
             link = task.get("link", "")
 
             if link:
-                msg += f"{i}. <a href=\"{link}\"><b>{title}</b></a>\n"
+                msg += f'{i}. {icon} <a href="{link}"><b>{title}</b></a>\n'
             else:
-                msg += f"{i}. <b>{title}</b>\n"
+                msg += f"{i}. {icon} <b>{title}</b>\n"
             msg += f"   🏫 {course}\n"
             msg += f"   ⏰ {deadline}\n\n"
 
         return msg
 
     def send_deadline_reminder(self, tasks: list[dict]):
-        """Send reminder for tasks due soon"""
         if not tasks:
             return
-        msg = f"⚠️ <b>Pengingat Deadline!</b>\n\n"
+        msg = "⚠️ <b>Pengingat Deadline!</b>\n\n"
         for task in tasks:
-            msg += f"• <b>{task['title']}</b>\n"
+            icon = self._urgency_icon(task)
+            msg += f"{icon} <b>{task['title']}</b>\n"
             msg += f"  ⏰ {task['deadline']}\n\n"
         self.send(msg)

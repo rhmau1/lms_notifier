@@ -52,11 +52,13 @@ def check_tasks_job():
 
     state["is_running"] = True
     state["status"] = "scraping"
-    add_log("🔍 Mulai cek tugas baru...")
+    add_log("🔍 Mulai login SIAKAD & cek tugas...")
 
     try:
         scraper = LMSScraper()
+        add_log("🌐 Membuka browser headless...")
         new_tasks = scraper.get_tasks(creds["username"], creds["password"])
+        add_log(f"📦 API mengembalikan {len(new_tasks)} tugas")
         
         # Find truly new tasks
         existing_ids = {t.get("id") for t in state["tasks"]}
@@ -76,7 +78,13 @@ def check_tasks_job():
             
         state["status"] = "idle"
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
         add_log(f"❌ Error: {str(e)}", "error")
+        tb_lines = [l for l in tb.split('\n') if l.strip()]
+        if len(tb_lines) > 1:
+            add_log(f"🔎 {tb_lines[-1][:120]}", "error")
+        logger.error(f"Full traceback:\n{tb}")
         state["status"] = "error"
     finally:
         state["is_running"] = False

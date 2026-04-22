@@ -602,7 +602,7 @@ function updateUI(data) {
   document.getElementById('statLast').textContent = data.last_check || '—';
 
   // Count urgent
-  const urgent = (data.tasks || []).filter(t => isUrgent(t.deadline)).length;
+  const urgent = (data.tasks || []).filter(t => isUrgent(t) || isOverdue(t)).length;
   document.getElementById('statUrgent').textContent = urgent;
 
   // Tasks
@@ -622,24 +622,26 @@ function updateUI(data) {
   }
 }
 
-function isUrgent(deadline) {
-  if (!deadline || deadline === '-') return false;
-  try {
-    const d = new Date(deadline);
-    const now = new Date();
-    const diff = (d - now) / (1000 * 60 * 60 * 24);
-    return diff >= 0 && diff <= 3;
-  } catch { return false; }
+function isUrgent(task) {
+  const ts = task.deadline_ts;
+  if (!ts) return false;
+  const now = Date.now() / 1000;
+  const diff = (ts - now) / 86400;
+  return diff >= 0 && diff <= 3;
 }
 
-function isSoon(deadline) {
-  if (!deadline || deadline === '-') return false;
-  try {
-    const d = new Date(deadline);
-    const now = new Date();
-    const diff = (d - now) / (1000 * 60 * 60 * 24);
-    return diff > 3 && diff <= 7;
-  } catch { return false; }
+function isSoon(task) {
+  const ts = task.deadline_ts;
+  if (!ts) return false;
+  const now = Date.now() / 1000;
+  const diff = (ts - now) / 86400;
+  return diff > 3 && diff <= 7;
+}
+
+function isOverdue(task) {
+  const ts = task.deadline_ts;
+  if (!ts) return false;
+  return ts < (Date.now() / 1000);
 }
 
 function renderTasks(tasks) {
@@ -648,17 +650,23 @@ function renderTasks(tasks) {
     el.innerHTML = `<div class="empty"><div class="empty-icon">📭</div><p>Belum ada data tugas.<br>Klik <b>Cek Sekarang</b>!</p></div>`;
     return;
   }
-  el.innerHTML = tasks.map(t => {
-    const urgentClass = isUrgent(t.deadline) ? 'urgent' : isSoon(t.deadline) ? 'soon' : 'ok';
-    const icon = isUrgent(t.deadline) ? '🔴' : isSoon(t.deadline) ? '🟡' : '🟢';
+  // Sort by deadline_ts ascending
+  const sorted = [...tasks].sort((a, b) => (a.deadline_ts || 999999999) - (b.deadline_ts || 999999999));
+  el.innerHTML = sorted.map(t => {
+    const overdue = isOverdue(t);
+    const urgent = !overdue && isUrgent(t);
+    const soon = !overdue && !urgent && isSoon(t);
+    const urgentClass = overdue ? 'urgent' : urgent ? 'urgent' : soon ? 'soon' : 'ok';
+    const icon = overdue ? '🔴' : urgent ? '🔴' : soon ? '🟡' : '🟢';
     const titleHtml = t.link
       ? `<a href="${t.link}" target="_blank">${escHtml(t.title)}</a>`
       : escHtml(t.title);
+    const overdueLabel = overdue ? ' <span style="color:var(--red);font-size:10px;font-family:var(--mono)">OVERDUE</span>' : '';
     return `
       <div class="task-item ${urgentClass}">
         <div class="task-icon">${icon}</div>
         <div class="task-body">
-          <div class="task-title">${titleHtml}</div>
+          <div class="task-title">${titleHtml}${overdueLabel}</div>
           <div class="task-meta">
             ${t.course ? `<span class="task-course">${escHtml(t.course)}</span>` : ''}
             <span class="task-deadline">⏰ ${escHtml(t.deadline || '-')}</span>
