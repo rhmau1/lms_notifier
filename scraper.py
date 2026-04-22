@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-
+ 
 class LMSScraper:
     SIAKAD_URL = "https://siakad.polinema.ac.id/beranda"
     LMS_BASE = "https://lmsslc.polinema.ac.id"
@@ -139,8 +139,7 @@ class LMSScraper:
                                 limitnum: 100,
                                 timesortfrom: Number({time_from}),
                                 timesortto: Number({time_to}),
-                                limitfrom: 0,
-                                actioneventsinprogress: false
+                                aftereventid: 0
                             }}
                         }}])
                     }});
