@@ -38,15 +38,7 @@ class LMSScraper:
         page.click('button[type="submit"], input[type="submit"]')
 
         # ── Step 3: Wait for post-login redirect to fully complete ─────────
-        # SIAKAD shows "Sedang login. Mohon tunggu, sistem sedang melakukan
-        # sinkronisasi data anda" — this is a NORMAL loading screen after
-        # SUCCESSFUL login. It is NOT an error. We must wait until we land
-        # on a final page (beranda/dashboard), not treat this text as failure.
-        #
-        # Strategy: poll the current URL every 2 seconds until we leave the
-        # login/sync area, up to 60 seconds total.
-
-        deadline = time.time() + 60  # max 60s for the whole redirect chain
+        deadline = time.time() + 60  
         while time.time() < deadline:
             time.sleep(2)
             try:
@@ -55,34 +47,32 @@ class LMSScraper:
                 pass
 
             url = page.url
-            # Success conditions: we left the login page
-            if (
-                "beranda" in url
-                or "dashboard" in url
-                or "lmsslc" in url
-                or "spada" in url
-            ):
+            # Success conditions: we left the login page and landed on a functional page
+            if any(x in url for x in ["beranda", "dashboard", "lmsslc", "spada"]):
                 break
 
-            # Check for a REAL wrong-password error (not the sync loading msg)
+            # Check body content
             body = ""
             try:
-                body = page.inner_text("body")
+                body = page.inner_text("body").lower()
             except Exception:
                 pass
 
-            sync_phrases = ["sinkronisasi", "sedang login", "mohon tunggu"]
-            is_loading_screen = any(p in body.lower() for p in sync_phrases)
+            # Enhanced sync & valid message check
+            # We don't want to crash if it says "Input data anda valid"
+            sync_phrases = ["sinkronisasi", "sedang login", "mohon tunggu", "data anda valid", "proses penyimpanan"]
+            is_loading_screen = any(p in body for p in sync_phrases)
 
             if not is_loading_screen:
-                # We're not loading — check if we're still on login with an error
+                # If not in loading/syncing, check if there's a legitimate error message
                 err_el = page.query_selector('.alert-danger, #error-summary, .help-block.error')
                 if err_el:
                     err_text = err_el.inner_text().strip()
-                    raise Exception(f"Login SIAKAD gagal (password salah?): {err_text[:120]}")
-                # No error element — just keep waiting
+                    # Final safety check: ensure the error text itself isn't a success message
+                    if not any(p in err_text.lower() for p in ["valid", "berhasil", "sukses"]):
+                        raise Exception(f"Login SIAKAD gagal: {err_text[:120]}")
+                
         else:
-            # Timed out still on login
             raise Exception("Login SIAKAD timeout: redirect tidak selesai dalam 60 detik.")
 
         # ── Step 4: Navigate to Akademik → LMS page ──────────────────────
@@ -124,7 +114,6 @@ class LMSScraper:
         page.goto(self.LMS_DASHBOARD, timeout=30000)
         page.wait_for_load_state("networkidle", timeout=30000)
 
-        # Verify we're actually logged in to LMS
         if "login" in page.url.lower() and "lmsslc" in page.url:
             raise Exception("Gagal masuk LMS: sesi tidak terbawa dari SIAKAD.")
 
@@ -135,8 +124,6 @@ class LMSScraper:
 
         # ── Step 9: Fetch events via Moodle AJAX API ──────────────────────
         return self._fetch_timeline_via_api(page, sesskey)
-
-    # ─────────────────────────────────────────────────────────────────────
 
     def _get_sesskey(self, page) -> str:
         try:
@@ -156,8 +143,8 @@ class LMSScraper:
 
     def _fetch_timeline_via_api(self, page, sesskey: str) -> list[dict]:
         now_ts = int(time.time())
-        time_from = now_ts - (30 * 24 * 3600)   # 30 days ago (include overdue)
-        time_to   = now_ts + (180 * 24 * 3600)  # 6 months ahead
+        time_from = now_ts - (30 * 24 * 3600)   
+        time_to   = now_ts + (180 * 24 * 3600)  
 
         api_url = (
             f"{self.LMS_BASE}/lib/ajax/service.php"
@@ -198,7 +185,6 @@ class LMSScraper:
             raise Exception("API timeline tidak mengembalikan data.")
 
         data = json.loads(result)
-
         if isinstance(data, dict) and data.get("fetch_error"):
             raise Exception(f"Fetch API error: {data['fetch_error']}")
 
@@ -228,7 +214,6 @@ class LMSScraper:
         event_type = event.get("eventtype", "")
         component  = event.get("component", "")
 
-        # Keep only activity-related events (assignments, quizzes, etc.)
         activity_components = {
             "mod_assign", "mod_quiz", "mod_workshop", "mod_choice",
             "mod_feedback", "mod_lesson", "mod_scorm", "mod_data",
@@ -241,24 +226,19 @@ class LMSScraper:
             or event_type in activity_event_types
         )
         if not is_activity:
-            # Still include if name suggests a deadline
             name_lc = event.get("name", "").lower()
             if not any(k in name_lc for k in ["due", "deadline", "submit", "laporan", "tugas", "milestone"]):
                 return None
 
-        # Title — strip " is due" suffix Moodle appends
         raw_name = event.get("name", "").strip()
         title = re.sub(r'\s+is\s+due\s*$', '', raw_name, flags=re.IGNORECASE).strip() or raw_name
 
-        # Course
         course_info = event.get("course") or {}
         course = course_info.get("fullname", "")
         if len(course) > 70:
             course = course[:67] + "..."
 
-        # Deadline timestamp
         deadline_ts = event.get("timesort") or event.get("timestart") or 0
-
         deadline_str = "Tidak diketahui"
         if deadline_ts:
             try:
@@ -268,7 +248,6 @@ class LMSScraper:
             except Exception:
                 deadline_str = str(deadline_ts)
 
-        # URL
         url = event.get("url", "")
         if not url:
             instance = event.get("instance", "")
