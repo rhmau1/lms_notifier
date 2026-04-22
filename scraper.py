@@ -90,66 +90,63 @@ class LMSScraper:
             pass
 
         # ── Step 6: Handle Spada intermediate ─────────────────────────────
-        # Per alur user: Kita harus masuk ke SALAH SATU kelas dulu di Spada
-        # agar sseni login (kredensial) terbawa sempurna ke LMS.
-        time.sleep(3)
-        if "spada" in page.url.lower() and "lmsslc" not in page.url:
-            try:
-                print("DIAGNOSTIC: Mencoba masuk ke salah satu kelas di Spada...")
-                # Cari tombol kelas (biasanya ada teks 'LMS Polinema', 'Masuk', atau link ke course)
-                selectors = [
-                    'a[href*="lmsslc.polinema.ac.id/course/view.php"]',
-                    'a:has-text("LMS Polinema")',
-                    'a:has-text("Masuk")',
-                    'a.btn-primary:has-text("LMS")'
-                ]
+        # Per alur user & screenshot: Navigasi ke Spada dan klik salah satu kartu matkul.
+        try:
+            spada_url = "https://slc.polinema.ac.id/spada/"
+            print(f"DIAGNOSTIC: Navigasi ke Spada: {spada_url}")
+            page.goto(spada_url, timeout=30000)
+            page.wait_for_load_state("networkidle", timeout=30000)
+            
+            # Tunggu kartu matkul muncul (LMS tab)
+            page.wait_for_selector('a[href*="gotourl="], .card, a:has-text("Proyek")', timeout=15000)
+            
+            # Cari kartu mata kuliah (berdasarkan screenshot link-nya mengandung 'gotourl=')
+            course_card = page.locator('a[href*="gotourl="], a:has-text("Proyek"), a:has-text("Statistik"), a:has-text("Pemrograman")').first
+            
+            if course_card.count() > 0:
+                print(f"DIAGNOSTIC: Mengeklik kartu mata kuliah untuk inisialisasi SSO...")
+                # Tangani kemungkinan buka tab baru
+                try:
+                    with page.context.expect_page(timeout=10000) as new_page_info:
+                        course_card.click()
+                    page = new_page_info.value
+                except:
+                    with page.expect_navigation(timeout=30000, wait_until="networkidle"):
+                        course_card.click()
                 
-                course_link = None
-                for sel in selectors:
-                    loc = page.locator(sel)
-                    if loc.count() > 0:
-                        course_link = loc.first
-                        break
-                
-                if course_link:
-                    # Tangani jika klik kelas membuka tab baru
-                    try:
-                        with page.context.expect_page(timeout=10000) as new_page_info:
-                            course_link.click()
-                        page = new_page_info.value
-                    except:
-                        with page.expect_navigation(timeout=30000, wait_until="networkidle"):
-                            course_link.click()
-                    
-                    page.wait_for_load_state("networkidle", timeout=30000)
-                    print(f"DIAGNOSTIC: Berhasil masuk ke halaman kelas: {page.url}")
-                else:
-                    print("DIAGNOSTIC: Tidak menemukan link kelas di Spada, mencoba tab LMS...")
-                    lms_tab = page.locator('a:has-text("LMS"), .nav-link:has-text("LMS")').first
-                    if lms_tab.count() > 0:
-                        with page.expect_navigation(timeout=20000, wait_until="networkidle"):
-                            lms_tab.click()
-            except Exception as e:
-                print(f"DIAGNOSTIC: Step 6 failed: {str(e)}")
-                pass
+                page.wait_for_load_state("networkidle", timeout=30000)
+                print(f"DIAGNOSTIC: Berhasil masuk ke LMS via Spada: {page.url}")
+            else:
+                print("DIAGNOSTIC: Tidak menemukan kartu mata kuliah di Spada grid.")
+        except Exception as e:
+            print(f"DIAGNOSTIC: Step 6 (Spada Card) failed: {str(e)}")
+            pass
 
         # ── Step 7: Navigate directly to LMS dashboard ────────────────────
         page.goto(self.LMS_DASHBOARD, timeout=30000)
         page.wait_for_load_state("networkidle", timeout=30000)
 
         # Wait for GUEST session to transition (Polinema SSO can be slow)
-        deadline = time.time() + 25  # Menambah waktu tunggu karena alur perpindahan sessi
+        deadline = time.time() + 35
+        attempts = 0
         while time.time() < deadline:
             title = page.title()
-            if "(GUEST)" not in title.upper():
-                # Pastikan juga userid sudah terdeteksi di CFG (bukan 1/0)
-                uid = page.evaluate("() => typeof M !== 'undefined' && M.cfg ? M.cfg.userid : 0")
-                if uid and int(uid) > 1:
-                    break
+            uid = page.evaluate("() => typeof M !== 'undefined' && M.cfg ? M.cfg.userid : 0")
             
+            if "(GUEST)" not in title.upper() and uid and int(uid) > 1:
+                break
+            
+            attempts += 1
             time.sleep(3)
             print(f"DIAGNOSTIC: Masih berstatus Guest/ID=1, mencoba refresh... ({page.url})")
-            page.reload()
+            
+            # Jika setelah 3 kali refresh masih Guest, coba paksa ke dashboard lagi
+            if attempts % 3 == 0:
+                print("DIAGNOSTIC: Sessi macet di Guest, paksa navigasi ulang ke Dashboard...")
+                page.goto(self.LMS_DASHBOARD, timeout=20000)
+            else:
+                page.reload()
+                
             page.wait_for_load_state("networkidle")
 
         if "login" in page.url.lower() and "lmsslc" in page.url:
